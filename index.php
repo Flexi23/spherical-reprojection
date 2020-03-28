@@ -3,13 +3,15 @@
 $absPath = __DIR__; // absolute
 function rel($path) {return substr($path,strlen(__DIR__)+1);} // relative
 
-if(isset($_REQUEST['path'])) {
+if(isset($_REQUEST['path']) && $_REQUEST['path'] != "") {
 	$absPath .= DIRECTORY_SEPARATOR . $_REQUEST['path'];
 }
 
 $relPath = rel($absPath);
 
 function saveConf($configuration) {
+	//echo 'save revoked';
+	//return;
 	$name = basename($configuration->imgSrc);
 	$newConfJson = json_encode($configuration);
 	$newLine = $name . ' => ' . $newConfJson;
@@ -71,7 +73,7 @@ if(isset($_REQUEST['conf'])) { // update per post
 if(isset($_REQUEST['list'])) {
 	function toA($dir) {
 		$name = rel($dir);
-		$url = urlencode($name);
+		$url = urlencode(str_replace(DIRECTORY_SEPARATOR, DIRECTORY_SEPARATOR.DIRECTORY_SEPARATOR, $name));
 		$html = "<a href='index.php?list&path=$url'>$name</a>";
 		return $html;
 	}
@@ -80,6 +82,12 @@ if(isset($_REQUEST['list'])) {
 		//$names = array_map("basename", $dirs);
 		$links = array_map("toA", $dirs);
 		echo "directories:<ul>";
+		if( $relPath != ""){
+			$relPathArray = explode(DIRECTORY_SEPARATOR, $relPath);
+			array_pop($relPathArray);	// minus the last one, this is now the parent path array
+			$parentPath = implode(DIRECTORY_SEPARATOR, $relPathArray);
+			echo "<li><a href='index.php?list&path=$parentPath'>..</a></li>";
+		}
 		foreach($links as $link) {
 			echo "<li>" . $link . "</li>";
 		}
@@ -135,6 +143,7 @@ if(file_exists($imgConfsPath)) {
 	uniform float mirrorSize;
 	uniform vec2 rotation;
 	uniform float zoom;
+	uniform vec4 scaramuzza;
 	uniform float mask;
 
 	uniform float flip;
@@ -250,6 +259,10 @@ if(file_exists($imgConfsPath)) {
 		return uv;
 	}
 
+	float logn(float v, float base){
+		return log(v)/log(base);
+	}
+
 	void main(void) {
 		vec2 uv_orig = uv;
 
@@ -265,6 +278,7 @@ if(file_exists($imgConfsPath)) {
 
 		// stereographic projection
 		l *= zoom*8.;
+		l = scaramuzza.x * l + scaramuzza.y * l * l + scaramuzza.z * l * l * l + scaramuzza.w * l * l * l * l; 
 		vec2 stereographicUv = azimuthalUv;
 		float dl = d / l;
 		float dl2 = dl * dl;
@@ -466,6 +480,8 @@ if(file_exists($imgConfsPath)) {
 
 			gui = new dat.GUI();
 			gui.add(viewSettings, 'album index');
+			gui.add(configuration, 'Previous');
+			gui.add(configuration, 'Next');
 			gui.add(configuration, 'imgSrc');
 			gui.add(configuration, 'gamma', 0.1, 5.);
 			gui.add(configuration, 'brightness', -0.5, 0.5);
@@ -480,7 +496,12 @@ if(file_exists($imgConfsPath)) {
 			gui.add(configuration, 'mask');
 
 			var stereographic = gui.addFolder('stereographic');
-			stereographic.add(configuration, 'd', 0.005, 5.);
+			stereographic.add(configuration, 'd', 0.005, 10.);
+			stereographic.add(configuration, 'a0', -10, 10);
+			stereographic.add(configuration, 'a1', -10, 10);
+			stereographic.add(configuration, 'a2', -10, 10);
+			stereographic.add(configuration, 'a3', -10, 10);
+			stereographic.add(configuration, 'Reset');
 
 			var azimuthal = gui.addFolder('azimuthal collage');
 			azimuthal.add(configuration, 'mirrorSize', 0.001, 1);
@@ -711,6 +732,7 @@ if(file_exists($imgConfsPath)) {
 			gl.uniform2f(gl.getUniformLocation(program, "rotation"), Math.cos(configuration.rotation / 180 * Math.PI), Math.sin(configuration.rotation / 180 * Math.PI));
 			gl.uniform3f(gl.getUniformLocation(program, "angles"), configuration.angle1 / 180 * Math.PI, configuration.angle2 / 180 * Math.PI, configuration.angle3 / 180 * Math.PI);
 			gl.uniform1f(gl.getUniformLocation(program, "zoom"), 1 / configuration.zoom);
+			gl.uniform4f(gl.getUniformLocation(program, "scaramuzza"), configuration.a0, configuration.a1, configuration.a2, configuration.a3);
 			gl.uniform1f(gl.getUniformLocation(program, "mask"), configuration.mask ? 1 : 0);
 			gl.uniform2f(gl.getUniformLocation(program, "flip"), configuration.flipX ? -1 : 1, configuration.flipY ? -1 : 1);
 			gl.uniform1f(gl.getUniformLocation(program, "equirect"), configuration.method == 'equirectangular' ? 1 : 0);
@@ -823,6 +845,9 @@ if(file_exists($imgConfsPath)) {
 						}
 						break;
 
+					case "KeyP":
+						isNewOrDebounced ? save() : {};
+						break;
 					case "Space":
 						(reads == 0) ? shutTheBox() : {};
 				}
@@ -833,6 +858,7 @@ if(file_exists($imgConfsPath)) {
 		function save() {
 			var sizeXbefore = sizeX;
 			var sizeYbefore = sizeY;
+			var showGrid = viewSettings['show grid'];
 			if(configuration.method == 'azimuthal'){
 				c.width = sizeX = 4096;
 				c.height = sizeY = 4096;
@@ -851,14 +877,24 @@ if(file_exists($imgConfsPath)) {
 				document.body.removeChild(elem);
 				c.width = sizeX = sizeXbefore;
 				c.height = sizeY = sizeYbefore;
+				viewSettings['show grid'] = showGrid;
 				render();
 			}, "image/jpeg", 0.95);
+		}
+		
+		function resetStereographicDistortion(){
+			configuration.d = 2; // d == 2: stereographic, 1: gnomonic, 2.4: Twilight (Clark), 2.5: James @see: https://upload.wikimedia.org/wikipedia/commons/b/ba/Comparison_azimuthal_projections.svg
+			configuration.zoom = 1;
+			configuration.a0 = 1;
+			configuration.a1 = 0;
+			configuration.a2 = 0;
+			configuration.a3 = 0;
 		}
 
 		var Configuration = function () {
 			this.imgSrc = '';
 			this.gamma = 1.;
-			this.brightness = -0.04;
+			this.brightness = 0.000;
 			this.method = 'equirectangular';
 			// spherical reprojection Euler angles
 			this.angle1 = 0;
@@ -871,11 +907,20 @@ if(file_exists($imgConfsPath)) {
 			this.d = 2; // d == 2: stereographic, 1: gnomonic, 2.4: Twilight (Clark), 2.5: James @see: https://upload.wikimedia.org/wikipedia/commons/b/ba/Comparison_azimuthal_projections.svg
 			// method = 'azimuthal collage'
 			this.zoom = 1;
+			// @see: https://sites.google.com/site/scarabotix/ocamcalib-toolbox
+			// polynomial radial distortion
+			this.a0 = 1;
+			this.a1 = 0;
+			this.a2 = 0;
+			this.a3 = 0;
 			this.mask = true;
 			this.mirrorSize = 0.001;
 			this.rotation = -0;
 			this.flip = false;
+			this.Reset = resetStereographicDistortion;
 			this.Save = save;
+			this.Next = loadNext;
+			this.Previous = loadPrevious;
 		};
 
 		var configuration = new Configuration();
@@ -941,6 +986,7 @@ if(file_exists($imgConfsPath)) {
 			}
 			sendConfTimeout = setTimeout( () => {
 				imgConfs[configuration.imgSrc] = Object.assign({}, configuration); // save value copy
+				//return; // 🤫
 				var xhr = new XMLHttpRequest();
 				xhr.open('POST', 'index.php', true);
 				xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -993,8 +1039,8 @@ if(file_exists($imgConfsPath)) {
 		This is a <a href="https://workshop.chromeexperiments.com/examples/gui" target="dat.gui">dat.gui</a> controlled WebGL 2 tool for spherical reprojection of equirectangular images.<br>
 		I thought it would be fun to hang a Ricoh Theta V under a kite, but I got nausea from the perspectives in a VR headset.<br>
 		I needed a tool to bring the photographed horizon to the texture's equator and <a href="https://www.shadertoy.com/view/4tjGW1" target="st">Simple 360 degree fov</a> was there to help.<br>
-		The <a href="https://en.wikipedia.org/wiki/Euler_angles" target="wiki">Euler angle</a> navigation is prone to <a href="https://en.wikipedia.org/wiki/Gimbal_lock" target="wiki">Gimbal lock</a>. <a href="https://twitter.com/3blue1brown/status/1037717615681069056" target="twitter">Quaternions</a> promise hope, but that's not yet implemented. Your chance.<br>
-		Perhaps <a href="https://threejs.org/docs/#examples/controls/OrbitControls">Orbit Controls</a> could be worth the challenge too.<br>
+		The <a href="https://en.wikipedia.org/wiki/Euler_angles" target="wiki">Euler angle</a> navigation is prone to <a href="https://en.wikipedia.org/wiki/Gimbal_lock" target="wiki">Gimbal lock</a>. <a href="https://twitter.com/3blue1brown/status/1037717615681069056" target="twitter">Quaternions</a> promise hope, but that's not yet implemented.<br>
+		Perhaps <a href="https://threejs.org/docs/#examples/controls/OrbitControls">Orbit Controls</a> could be worth the challenge too. <a href="https://github.com/Flexi23/spherical-reprojection" target="github">Your chance</a>.<br>
 		Nikolas Stausbøl from <a href="https://twitter.com/Flexi23/status/1029106003747500032" target="twitter">@evryone_XR</a>, creator of <a href="https://evry.one/nickeldome/">Nickeldome</a>, suggested a way to add exif data for sharing on Facebook.</br>
 		I typically use this Windows command line <a href="http://www.mediafire.com/file/jd42i7a8dbhfpaz/exiftool.zip/file">tool</a> with a batch file where you can drop image files on.<br>
 		Drop your own <a href="https://en.wikipedia.org/wiki/Equirectangular_projection" target="wiki">equirectangular</a> photos on this site and save reprojections of it, currently at a fixed size of 4096x2048 pixels.<br>
