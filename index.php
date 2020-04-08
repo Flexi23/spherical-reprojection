@@ -1,4 +1,5 @@
 <?php
+$enableSaveConf = true;
 
 $absPath = __DIR__; // absolute
 function rel($path) {return substr($path,strlen(__DIR__)+1);} // relative
@@ -10,8 +11,11 @@ if(isset($_REQUEST['path']) && $_REQUEST['path'] != "") {
 $relPath = rel($absPath);
 
 function saveConf($configuration) {
-	//echo 'save revoked';
-	//return;
+	global $enableSaveConf;
+	if(!$enableSaveConf) {
+		echo 'save revoked';
+		return;
+	}
 	$name = basename($configuration->imgSrc);
 	$newConfJson = json_encode($configuration);
 	$newLine = $name . ' => ' . $newConfJson;
@@ -140,6 +144,10 @@ if(file_exists($imgConfsPath)) {
 
 	uniform vec3 angles;
 
+	uniform vec2 pointer;
+	uniform float magnifierRadius;
+	uniform float refractivity;
+
 	uniform float mirrorSize;
 	uniform vec2 rotation;
 	uniform float zoom;
@@ -263,14 +271,33 @@ if(file_exists($imgConfsPath)) {
 		return log(v)/log(base);
 	}
 
+	vec2 uv_polar(vec2 uv, vec2 center){
+		vec2 c = uv - center;
+		float rad = length(c);
+		float ang = atan2(c.x,c.y);
+		return vec2(ang, rad);
+	}
+
+	vec2 uv_lens_half_sphere(vec2 uv, vec2 position, float radius, float refractivity){
+		vec2 polar = uv_polar(uv, position);
+		float cone = clamp(1.-polar.y/radius, 0., 1.);
+		float halfsphere = sqrt(1.-pow(cone-1.,2.));
+		float w = atan2(1.-cone, halfsphere);
+		float refrac_w = w-asin(sin(w)/refractivity);
+		float refrac_d = 1.-cone - sin(refrac_w)*halfsphere/cos(refrac_w);
+		vec2 refrac_uv = position + vec2(sin(polar.x),cos(polar.x))*refrac_d*radius;
+		return mix(uv, refrac_uv, float(length(uv-position)<radius));
+	}
+
 	void main(void) {
 		vec2 uv_orig = uv;
+		vec2 uvMagnifyingGlass = uv_lens_half_sphere((uv - 0.5) * aspect, (pointer-0.5)*aspect, magnifierRadius, refractivity);
 
-		vec2 equirectangularUv = 0.5 + (uv_orig-0.5) * aspect * vec2(0.5,1);
+		vec2 equirectangularUv = (uvMagnifyingGlass+0.5) * vec2(0.5,1) - vec2(0.5/aspect.x - 0.5, 0);
 		float equirectangularMask = float(max(equirectangularUv.x,equirectangularUv.y) <= 1. && min(equirectangularUv.x,equirectangularUv.y) >= 0.);
 
 		// azimuthal projection
-		vec2 uv = (uv - 0.5) * aspect;
+		vec2 uv = uvMagnifyingGlass;
 		float a = -atan2(uv.y, uv.x) - pi*0.5;
 		float l = length(uv);
 		vec2 azimuthalUv = vec2(a * pi2_inv, l * 2.);
@@ -279,6 +306,7 @@ if(file_exists($imgConfsPath)) {
 		// stereographic projection
 		l *= zoom*8.;
 		l = scaramuzza.x * l + scaramuzza.y * l * l + scaramuzza.z * l * l * l + scaramuzza.w * l * l * l * l; 
+		l *= 1./(scaramuzza.x + scaramuzza.y + scaramuzza.z + scaramuzza.w);
 		vec2 stereographicUv = azimuthalUv;
 		float dl = d / l;
 		float dl2 = dl * dl;
@@ -417,6 +445,7 @@ if(file_exists($imgConfsPath)) {
 			document.onmousemove = e => {
 				pointerX = e.pageX / innerWidth;
 				pointerY = 1 - e.pageY / innerHeight;
+				rerender = true;
 			};
 
 			window.onresize = e => {
@@ -427,7 +456,7 @@ if(file_exists($imgConfsPath)) {
 
 			document.body.onkeydown = e => {
 				if(["ArrowLeft", "ArrowRight"].indexOf(e.code) > -1){
-					e.preventDefault();	// prevent <select> reaction on cursor left and right
+					e.preventDefault();	// prevent <select> reaction on cursor left and right, unfortunately also disables Alt+left to go back in browser history
 				}
 				keyCode2downTimeMap[e.code] = keyCode2downTimeMap[e.code] || {age: 0, reads: 0};
 			}
@@ -495,12 +524,17 @@ if(file_exists($imgConfsPath)) {
 			gui.add(configuration, 'zoom', 0.05, 5);
 			gui.add(configuration, 'mask');
 
+			var magnifier = gui.addFolder("magnifier");
+			magnifier.add(configuration, "magnifier");
+			magnifier.add(configuration, "radius", 0., 0.5);
+			magnifier.add(configuration, "refractivity", 1., 5.);
+
 			var stereographic = gui.addFolder('stereographic');
-			stereographic.add(configuration, 'd', 0.005, 10.);
-			stereographic.add(configuration, 'a0', -10, 10);
-			stereographic.add(configuration, 'a1', -10, 10);
-			stereographic.add(configuration, 'a2', -10, 10);
-			stereographic.add(configuration, 'a3', -10, 10);
+			stereographic.add(configuration, 'd', 0.005, 2.);
+			stereographic.add(configuration, 'a0', 0.0, 100.);
+			stereographic.add(configuration, 'a1', 0.0, 16.);
+			stereographic.add(configuration, 'a2', 0.0, 16.);
+			stereographic.add(configuration, 'a3', 0.0, 1.0);
 			stereographic.add(configuration, 'Reset');
 
 			var azimuthal = gui.addFolder('azimuthal collage');
@@ -508,7 +542,7 @@ if(file_exists($imgConfsPath)) {
 			azimuthal.add(configuration, 'rotation', -180, 180);
 			azimuthal.add(configuration, 'flip');
 
-			var controllers = gui.__controllers.concat(azimuthal.__controllers, stereographic.__controllers);
+			var controllers = gui.__controllers.concat(magnifier.__controllers, azimuthal.__controllers, stereographic.__controllers);
 			controllers.map(_ => _.listen().onChange(() => {
 				roundAngles();
 				sendConf();
@@ -672,10 +706,26 @@ if(file_exists($imgConfsPath)) {
 
 		function enableImageDrop(elem) {
 			['dragenter', 'dragover', 'dragleave', 'drop'].map(_ => elem.addEventListener(_, e => {
-				 e.preventDefault();
-				 e.stopPropagation();
-				 if(e.dataTransfer && e.dataTransfer.files) {
-					 sequentialRead(Object.assign([],e.dataTransfer.files)); // cast FileList object to Array so we can slice
+				e.preventDefault();
+				e.stopPropagation();
+				// accept files
+				if(e.dataTransfer && e.dataTransfer.files) {
+					sequentialRead(Object.assign([],e.dataTransfer.files)); // cast FileList object to Array so we can slice
+				}
+				// accept uris
+				if(e.type == "drop"  && e.dataTransfer.files.length == 0){
+					var data = e.dataTransfer.items;
+					for (var i = 0; i < data.length; i++) {
+						if ((data[i].kind == 'string') && (data[i].type.match('^text/uri-list'))) {
+							data[i].getAsString(uri => {
+								var xhr = new XMLHttpRequest();
+								xhr.open("GET", uri);
+								xhr.responseType = "blob"; // forcing it
+								xhr.onload = () => sequentialRead([xhr.response]);
+								xhr.send();
+							});
+						}
+					}
 				}
 			}, false));
 		}
@@ -732,6 +782,10 @@ if(file_exists($imgConfsPath)) {
 			gl.uniform2f(gl.getUniformLocation(program, "rotation"), Math.cos(configuration.rotation / 180 * Math.PI), Math.sin(configuration.rotation / 180 * Math.PI));
 			gl.uniform3f(gl.getUniformLocation(program, "angles"), configuration.angle1 / 180 * Math.PI, configuration.angle2 / 180 * Math.PI, configuration.angle3 / 180 * Math.PI);
 			gl.uniform1f(gl.getUniformLocation(program, "zoom"), 1 / configuration.zoom);
+			gl.uniform2f(gl.getUniformLocation(program, "pointer"), pointerX, pointerY);
+			gl.uniform1f(gl.getUniformLocation(program, "magnifierRadius"), configuration.radius);
+			gl.uniform1f(gl.getUniformLocation(program, "refractivity"), configuration.magnifier ? configuration.refractivity : 1);
+			
 			gl.uniform4f(gl.getUniformLocation(program, "scaramuzza"), configuration.a0, configuration.a1, configuration.a2, configuration.a3);
 			gl.uniform1f(gl.getUniformLocation(program, "mask"), configuration.mask ? 1 : 0);
 			gl.uniform2f(gl.getUniformLocation(program, "flip"), configuration.flipX ? -1 : 1, configuration.flipY ? -1 : 1);
@@ -881,7 +935,7 @@ if(file_exists($imgConfsPath)) {
 				render();
 			}, "image/jpeg", 0.95);
 		}
-		
+
 		function resetStereographicDistortion(){
 			configuration.d = 2; // d == 2: stereographic, 1: gnomonic, 2.4: Twilight (Clark), 2.5: James @see: https://upload.wikimedia.org/wikipedia/commons/b/ba/Comparison_azimuthal_projections.svg
 			configuration.zoom = 1;
@@ -895,6 +949,9 @@ if(file_exists($imgConfsPath)) {
 			this.imgSrc = '';
 			this.gamma = 1.;
 			this.brightness = 0.000;
+			this.radius = 0.2;
+			this.magnifier = true;
+			this.refractivity = 2.4;
 			this.method = 'equirectangular';
 			// spherical reprojection Euler angles
 			this.angle1 = 0;
@@ -909,7 +966,7 @@ if(file_exists($imgConfsPath)) {
 			this.zoom = 1;
 			// @see: https://sites.google.com/site/scarabotix/ocamcalib-toolbox
 			// polynomial radial distortion
-			this.a0 = 1;
+			this.a0 = 20;
 			this.a1 = 0;
 			this.a2 = 0;
 			this.a3 = 0;
@@ -986,8 +1043,10 @@ if(file_exists($imgConfsPath)) {
 			}
 			sendConfTimeout = setTimeout( () => {
 				imgConfs[configuration.imgSrc] = Object.assign({}, configuration); // save value copy
-				//return; // 🤫
-				var xhr = new XMLHttpRequest();
+				<?php if(!$enableSaveConf){
+					?>return; // 🤫
+				<?php }
+				?>var xhr = new XMLHttpRequest();
 				xhr.open('POST', 'index.php', true);
 				xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
 				xhr.onreadystatechange = function () {
@@ -1025,7 +1084,7 @@ if(file_exists($imgConfsPath)) {
 		}
 		#splainer {
 			position: absolute;
-		  padding: 8px;
+			padding: 8px;
 			top: 16px;
 			left: 16px;
 			z-index: 2;
