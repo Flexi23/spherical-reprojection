@@ -137,7 +137,8 @@ if(file_exists($imgConfsPath)) {
 
 	varying vec2 uv;
 
-	uniform sampler2D sampler_pano;
+	uniform sampler2D samplerPano;
+	uniform sampler2D samplerPanoNearest;
 	uniform vec2 aspect;
 	uniform vec2 texSize;
 	uniform vec2 pixelSize;
@@ -147,6 +148,7 @@ if(file_exists($imgConfsPath)) {
 	uniform vec2 pointer;
 	uniform float magnifierRadius;
 	uniform float refractivity;
+	uniform float interpolate;
 
 	uniform float mirrorSize;
 	uniform vec2 rotation;
@@ -354,7 +356,8 @@ if(file_exists($imgConfsPath)) {
 
 		mixUv = tiltEquirect(mixUv); // spherical reprojection
 
-		gl_FragColor = texture2D(sampler_pano, mixUv); // single texture lookup
+		//gl_FragColor = texture2D(samplerPano, mixUv); // single texture lookup
+		gl_FragColor = mix(texture2D(samplerPanoNearest, mixUv), texture2D(samplerPano, mixUv), interpolate);
 		gl_FragColor *= max(1.-mask, mixMask);
 
 		gl_FragColor = pow(gl_FragColor, vec4(1./gamma)) + brightness;
@@ -514,7 +517,7 @@ if(file_exists($imgConfsPath)) {
 			gui.add(configuration, 'imgSrc');
 			gui.add(configuration, 'gamma', 0.1, 5.);
 			gui.add(configuration, 'brightness', -0.5, 0.5);
-
+			gui.add(configuration, 'interpolate', 0., 1.);
 			gui.add(configuration, 'angle1', -180, 180);
 			gui.add(configuration, 'angle2', -180, 180);
 			gui.add(configuration, 'angle3', -180, 180);
@@ -631,7 +634,9 @@ if(file_exists($imgConfsPath)) {
 
 		function transition2(img) {
 			loadConf(img.name);
-			createAndBindImageTexture(img, getFBO(0), gl.TEXTURE1);
+			createAndBindImageTexture(img, getFBO(1), gl.TEXTURE1, true);
+			createAndBindImageTexture(img, getFBO(2), gl.TEXTURE2, false);
+
 			// todo: buffer two writeable textures to really transition
 			rerender = true;
 		}
@@ -677,9 +682,7 @@ if(file_exists($imgConfsPath)) {
 			if(imgSrcs.length > 0) {
 				var imgSrc = imgSrcs[0];
 				createImg(imgSrc, img => {
-					loadConf(basename(imgSrc));
-					createAndBindImageTexture(img, getFBO(0), gl.TEXTURE1);
-					rerender = true;
+					transition2(img)
 					sequentialLoad(imgSrcs.slice(1)); // recursion
 				});
 			}
@@ -691,7 +694,6 @@ if(file_exists($imgConfsPath)) {
 				var reader = new FileReader();
 				reader.onloadend = progressEvent => {
 					createImg(reader.result, img => {
-						createAndBindImageTexture(img, getFBO(0), gl.TEXTURE1);
 						if( imgConfs[img.name] == undefined) {
 							imgConfs[img.name] = Object.assign({}, configuration); // use values from previous configuration
 							imgConfs[img.name].imgSrc = img.name;
@@ -757,7 +759,7 @@ if(file_exists($imgConfsPath)) {
 			return program;
 		}
 
-		function createAndBindImageTexture(img, fbo, activeUnit) {
+		function createAndBindImageTexture(img, fbo, activeUnit, interpolate) {
 			if(fbo.texture == undefined) {
 				fbo.texture = gl.createTexture();
 			}
@@ -765,7 +767,7 @@ if(file_exists($imgConfsPath)) {
 			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, interpolate ? gl.LINEAR : gl.NEAREST);
 			gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
 			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbo.texture, 0);
 			gl.activeTexture(activeUnit);
@@ -777,7 +779,9 @@ if(file_exists($imgConfsPath)) {
 			gl.uniform2f(gl.getUniformLocation(program, "texSize"), sizeX, sizeY);
 			gl.uniform2f(gl.getUniformLocation(program, "pixelSize"), 1. / sizeX, 1. / sizeY);
 			gl.uniform2f(gl.getUniformLocation(program, "aspect"), aspect.x, aspect.y);
-			gl.uniform1i(gl.getUniformLocation(program, "sampler_pano"), 1);
+			gl.uniform1i(gl.getUniformLocation(program, "samplerPano"), 1);
+			gl.uniform1i(gl.getUniformLocation(program, "samplerPanoNearest"), 2);
+			gl.uniform1f(gl.getUniformLocation(program, "interpolate"), configuration.interpolate);
 			gl.uniform1f(gl.getUniformLocation(program, "mirrorSize"), configuration.mirrorSize);
 			gl.uniform2f(gl.getUniformLocation(program, "rotation"), Math.cos(configuration.rotation / 180 * Math.PI), Math.sin(configuration.rotation / 180 * Math.PI));
 			gl.uniform3f(gl.getUniformLocation(program, "angles"), configuration.angle1 / 180 * Math.PI, configuration.angle2 / 180 * Math.PI, configuration.angle3 / 180 * Math.PI);
@@ -818,13 +822,17 @@ if(file_exists($imgConfsPath)) {
 		}
 
 		function render() {
-			if(fbos[0] == undefined)
+			if(fbos.length < 1)
 				return;
 			
 			calcAspect();
 			gl.viewport(0, 0, sizeX, sizeY);
 			gl.useProgram(prog_pano);
 			setUniforms(prog_pano);
+			fbos.forEach(fbo => {
+				gl.activeTexture(fbo.activeUnit);
+				gl.bindTexture(gl.TEXTURE_2D, fbo.texture);
+			});
 			renderAsTriangleStrip(null);
 		}
 
@@ -902,6 +910,14 @@ if(file_exists($imgConfsPath)) {
 					case "KeyP":
 						isNewOrDebounced ? save() : {};
 						break;
+					case "KeyM":
+						if(reads == 0)
+						{
+							configuration.magnifier = !configuration.magnifier;
+							sendConf();
+							rerender = true;
+						}
+						break;
 					case "Space":
 						(reads == 0) ? shutTheBox() : {};
 				}
@@ -949,9 +965,13 @@ if(file_exists($imgConfsPath)) {
 			this.imgSrc = '';
 			this.gamma = 1.;
 			this.brightness = 0.000;
+
+			this.interpolate = 1;
+
 			this.radius = 0.2;
 			this.magnifier = true;
 			this.refractivity = 2.4;
+
 			this.method = 'equirectangular';
 			// spherical reprojection Euler angles
 			this.angle1 = 0;
