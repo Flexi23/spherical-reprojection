@@ -470,6 +470,19 @@ if(file_exists($imgConfsPath)) {
 
 			enableImageDrop(document);
 
+			c.onclick = e => {
+				loadNext();
+			};
+
+			window.onpopstate = e => {
+				var imgName = window.location.hash.replace("#", "");
+				while(currentItem.img.name != imgName)
+				{
+					currentItem = currentItem.next;
+				}
+				transition2(currentItem.img);
+			};
+
 			window.onresize();
 
 			prog_pano = createAndLinkProgram("shader-fs-pano");
@@ -667,6 +680,7 @@ if(file_exists($imgConfsPath)) {
 			}
 ?>
 		function loadConf(imgName) {
+			window.location.hash = imgName;
 			if(imgConfs[imgName]) {
 				setConfiguration(Object.assign({}, imgConfs[imgName]));
 			} else {
@@ -966,7 +980,7 @@ if(file_exists($imgConfsPath)) {
 			this.gamma = 1.;
 			this.brightness = 0.000;
 
-			this.interpolate = 1;
+			this.interpolate = 0;
 
 			this.radius = 0.2;
 			this.magnifier = true;
@@ -1096,7 +1110,6 @@ if(file_exists($imgConfsPath)) {
 			position: absolute;
 			top: 0;
 			left: 0;
-			z-index: -1;
 		}
 		a {
 			color: #ffffff;
